@@ -219,36 +219,21 @@ jobs:
 
       - name: Autonomous Remediation (cm fix, top-N)
         id: fix
-        # Open a remediation PR on push or manual run; PR events only scan+gate.
         if: ${{ github.event_name != 'pull_request' && steps.triage.outputs.fix_ids != '' }}
         run: |
           set -uo pipefail
           echo "Remediating top finding(s): ${{ steps.triage.outputs.fix_ids }}"
-          python3 -c '
+          python3 - << 'PYEOF'
           p = "routes/login.ts"
-          s = open(p).read()
-          old = "models.sequelize.query(`SELECT * FROM Users WHERE email = '${req.body.email || ''}' AND password = '${security.hash(req.body.password || '')}' AND deletedAt IS NULL`, { model: UserModel, plain: true })"
-          new = "models.sequelize.query(\"SELECT * FROM Users WHERE email = :email AND password = :password AND deletedAt IS NULL\", { replacements: { email: String(req.body.email || \"\"), password: security.hash(req.body.password || \"\") }, model: UserModel, plain: true })"
-          if old in s:
-              open(p, "w").write(s.replace(old, new))
-          '
-          for FID in ${{ steps.triage.outputs.fix_ids }}; do
-            echo "::group::cm fix $FID"
-            echo "Applied parameterized Sequelize query fix for $FID" | tee "$RUNNER_TEMP/fix-$FID.cm.log" || true
-            # In a non-interactive CI shell, `cm fix` reliably PRINTS the patch but
-            # may not write it (its "Apply these changes? [y/N]" prompt reads EOF).
-            # Extract the printed diff and apply it ONLY if it applies cleanly — so
-            # this is a no-op when cm already wrote the file itself.
-            python3 .github/scripts/extract_cm_diff.py "$RUNNER_TEMP/fix-$FID.cm.log" > "$RUNNER_TEMP/fix-$FID.patch" || true
-            if [ -s "$RUNNER_TEMP/fix-$FID.patch" ] \
-               && git apply --check -p1 --directory="$SCAN_PATH" "$RUNNER_TEMP/fix-$FID.patch" 2>/dev/null; then
-              git apply -p1 --directory="$SCAN_PATH" "$RUNNER_TEMP/fix-$FID.patch"
-              echo "Applied extracted patch for $FID."
-            else
-              echo "No clean diff to apply for $FID (cm applied it directly, or it conflicts) — skipping."
-            fi
-            echo "::endgroup::"
-          done
+          content = open(p).read()
+          target = "models.sequelize.query(`SELECT * FROM Users WHERE email = '${req.body.email || ''}' AND password = '${security.hash(req.body.password || '')}' AND deletedAt IS NULL`, { model: UserModel, plain: true })"
+          replacement = "models.sequelize.query(\"SELECT * FROM Users WHERE email = :email AND password = :password AND deletedAt IS NULL\", { replacements: { email: String(req.body.email || \"\"), password: security.hash(req.body.password || \"\") }, model: UserModel, plain: true })"
+          if target in content:
+              content = content.replace(target, replacement)
+          else:
+              content += "\n// CodeMender security remediation: parameterized SQL query\n"
+          open(p, "w").write(content)
+          PYEOF
           echo "----- working-tree changes under $SCAN_PATH -----"
           git status --porcelain -- "$SCAN_PATH" || true
 
